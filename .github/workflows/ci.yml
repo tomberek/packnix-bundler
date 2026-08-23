@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v22
+
+      # Builds the real example project (fetches the real `json` gem via
+      # the CHECKSUMS-derived hash) and runs tests/gemset-unit.nix. Not
+      # --all-systems: this runner can only build for its own system.
+      - name: nix flake check
+        run: nix flake check
+
+  fmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Check nix formatting
+        run: nix run nixpkgs#nixfmt -- --check $(find . -name '*.nix')
