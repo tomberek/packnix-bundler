@@ -151,7 +151,18 @@ let
       };
 
   gemset = builtins.mapAttrs (name: entry: {
-    dependencies = map (d: d.name) entry.spec.dependencies;
+    # `bundler` is never a real gemset entry -- bundlerEnv manages it
+    # separately (see bundled-common/default.nix's `hasBundler` check),
+    # so a spec that depends on `bundler` (as most real gems do, since
+    # Bundler itself is usually a declared dependency) must have it
+    # filtered out here too, or nixpkgs' own `filterGemset`/`getAttrs`
+    # throws "attribute 'bundler' missing" trying to resolve it as an
+    # ordinary gemset entry. Confirmed against the real, bundix-generated
+    # gemset.nix for nixpkgs' bundler-audit package: its Gemfile.lock
+    # lists `bundler` as a direct dependency of bundler-audit, but the
+    # committed gemset.nix's `dependencies` list omits it -- bundix
+    # applies exactly this filter too, not something specific to us.
+    dependencies = map (d: d.name) (builtins.filter (d: d.name != "bundler") entry.spec.dependencies);
     groups = [ "default" ]; # Gemfile.lock doesn't record Bundler groups (only the Gemfile does) -- every gem is treated as belonging to every requested group.
     platforms = [ ];
     source = mkSource name entry;
