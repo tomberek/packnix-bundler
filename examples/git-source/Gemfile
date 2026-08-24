@@ -1,0 +1,2 @@
+source 'https://rubygems.org'
+gem 'anystyle', git: 'https://github.com/inukshuk/anystyle.git', ref: 'c6f5fb2fa6e8ce9456ad1e1e88d6bba5f3d7731d'

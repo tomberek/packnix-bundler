@@ -20,23 +20,12 @@
   gemdir ? null,
   gemfile ? if gemdir == null then null else gemdir + "/Gemfile",
   lockfile ? if gemdir == null then null else gemdir + "/Gemfile.lock",
-  # { "<gem name>" = "sha256-..."; ... } -- see mk-gemset.nix; required
-  # only if the lockfile has any GIT-sourced gem.
-  gitHashes ? { },
   ...
 }@args:
 let
-  gemset = mkGemset {
-    lockFile = lockfile;
-    inherit gitHashes;
+  gemset = mkGemset { lockFile = lockfile; };
+  bundlerEnvArgs = (builtins.removeAttrs args [ "pkgs" ]) // {
+    inherit gemfile lockfile gemset;
   };
-  bundlerEnvArgs =
-    (builtins.removeAttrs args [
-      "pkgs"
-      "gitHashes"
-    ])
-    // {
-      inherit gemfile lockfile gemset;
-    };
 in
 pkgs.bundlerEnv bundlerEnvArgs

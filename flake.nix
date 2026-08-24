@@ -56,6 +56,19 @@
             pname = "bundler-audit";
             gemdir = ./examples/bundler-audit;
           };
+
+          # A git-sourced gem (anystyle, pinned to a real commit) -- no
+          # gitHashes needed. builtins.fetchGit { url; rev; } with a full
+          # commit SHA is itself content-addressed and evaluates purely
+          # (confirmed: no --impure anywhere in this build), so
+          # mkGemset pre-fetches it directly and hands the result to
+          # buildRubyGem as `src`, bypassing only the fetch step of
+          # nixpkgs' usual fetchgit-based path.
+          git-source = buildBundlerApp {
+            inherit pkgs;
+            pname = "anystyle";
+            gemdir = ./examples/git-source;
+          };
         }
       );
 

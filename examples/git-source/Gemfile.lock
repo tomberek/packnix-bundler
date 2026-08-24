@@ -1,0 +1,14 @@
+GIT
+  remote: https://github.com/inukshuk/anystyle.git
+  revision: c6f5fb2fa6e8ce9456ad1e1e88d6bba5f3d7731d
+  specs:
+    anystyle (1.6.0)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  anystyle!
+
+BUNDLED WITH
+   2.5.22

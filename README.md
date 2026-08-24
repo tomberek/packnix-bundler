@@ -42,16 +42,12 @@ by Nix's own fixed-output-derivation content check. No `bundix`, no
 |---|---|---|
 | `gem` (RubyGems) | Yes, if `CHECKSUMS` is present | hash comes straight from the lockfile |
 | `path` | Always | nixpkgs' `pathDerivation` needs no hash at all |
-| `git` | No | a `Gemfile.lock` `GIT` block only records `remote`/`revision`, never a content hash, and nixpkgs' `buildRubyGem` hardcodes a `fetchgit` call that requires one (confirmed by reading `pkgs/development/ruby-modules/gem/default.nix` — no hash-free fallback exists there) |
+| `git` | Yes | a `Gemfile.lock` `GIT` block always records a full 40-character commit `revision`, and `builtins.fetchGit { url; rev; }` with a full commit SHA is itself content-addressed and evaluates purely — confirmed: no `--impure` needed for `nix eval`, `nix build`, or `nix flake check`. `mkGemset` pre-fetches the tree and passes it to `buildRubyGem` as `src`, which skips that function's usual (hash-requiring) `fetchgit` call entirely (`gem/default.nix`'s `src = attrs.src or (...)`) |
 
-For git-sourced gems, supply the hash yourself via `gitHashes` (see
-below) — still no `bundix` invocation anywhere, just the one manual hash
-per git dependency you'd need for any `fetchgit`-based nixpkgs derivation
-whose upstream doesn't embed a content hash.
-
-If a lockfile has no `CHECKSUMS` section at all (pre-Bundler-2.7), `mkGemset`
-throws a clear error rather than silently failing — regenerate it with
-`bundle lock --add-checksums`.
+If a lockfile has no `CHECKSUMS` section at all (pre-Bundler-2.7),
+`mkGemset` throws a clear error rather than silently failing for
+RubyGems-sourced deps — regenerate it with `bundle lock
+--add-checksums`.
 
 ## Usage
 
@@ -68,7 +64,6 @@ throws a clear error rather than silently failing — regenerate it with
         inherit pkgs;
         name = "my-ruby-app";
         gemdir = ./.;  # directory containing Gemfile + Gemfile.lock
-        # gitHashes = { "some-git-gem" = "sha256-..."; };  # only if you have git-sourced gems
       };
     };
 }
@@ -97,6 +92,12 @@ $ nix build .#example
 $ ls result/lib/ruby/gems/*/gems/
 json-2.21.2
 ```
+
+`examples/git-source/` demonstrates a git-sourced gem
+([`anystyle`](https://github.com/inukshuk/anystyle), pinned to a real
+commit) — `nix build .#git-source` fetches it via `builtins.fetchGit`
+using the `revision` already in the lockfile, no separate hash needed
+anywhere, no `--impure` flag.
 
 ## Real-world comparison: nixpkgs' `bundler-audit`
 
@@ -153,11 +154,12 @@ hash independently confirmed above to actually fetch the real gem.
 
 | Path | What |
 |---|---|
-| `flake.nix` | Inputs `nixpkgs` + `packnix`; exposes `lib.mkGemset`, `lib.buildBundlerApp`, `packages.<system>.{example,bundler-audit}`, `checks.<system>.gemset-unit`. Per-system outputs via `builtins.mapAttrs (system: pkgs: ...) nixpkgs.legacyPackages` (nixpkgs' own top-level `flake.nix` idiom — see the file's comment) rather than a hardcoded systems list. |
-| `lib/mk-gemset.nix` | Parses a `Gemfile.lock` via `packnix.lib.grammars.gemfileLock`, builds a `bundled-common`-compatible gemset attrset. Handles platform-qualified spec versions (matches `bundix`'s own behavior: prefer the platform-suffix-less variant when both exist — confirmed against two real nixpkgs packages' paired `Gemfile.lock`/`gemset.nix`), and filters `bundler` out of every gem's `dependencies` (also confirmed against a real `bundix`-generated `gemset.nix` — see the comparison below). |
+| `flake.nix` | Inputs `nixpkgs` + `packnix`; exposes `lib.mkGemset`, `lib.buildBundlerApp`, `packages.<system>.{example,bundler-audit,git-source}`, `checks.<system>.gemset-unit`. Per-system outputs via `builtins.mapAttrs (system: pkgs: ...) nixpkgs.legacyPackages` (nixpkgs' own top-level `flake.nix` idiom — see the file's comment) rather than a hardcoded systems list. |
+| `lib/mk-gemset.nix` | Parses a `Gemfile.lock` via `packnix.lib.grammars.gemfileLock`, builds a `bundled-common`-compatible gemset attrset. Handles platform-qualified spec versions (matches `bundix`'s own behavior: prefer the platform-suffix-less variant when both exist — confirmed against two real nixpkgs packages' paired `Gemfile.lock`/`gemset.nix`), filters `bundler` out of every gem's `dependencies` (also confirmed against a real `bundix`-generated `gemset.nix` — see the comparison below), and pre-fetches git-sourced gems via `builtins.fetchGit`. |
 | `lib/build-bundler-app.nix` | Thin wrapper: `mkGemset` output fed into `pkgs.bundlerEnv`. |
 | `example/` | A real, `bundle`-generated `Gemfile`/`Gemfile.lock` pair with a genuine `CHECKSUMS` section. |
 | `examples/bundler-audit/` | nixpkgs' real `bundler-audit` package's `Gemfile`, lockfile regenerated with `--add-checksums` — see the comparison below. |
+| `examples/git-source/` | A git-sourced gem (`anystyle`, pinned to a real commit). |
 | `tests/gemset-unit.nix` | `mkGemset` output vs. a hand-written expected attrset. |
 
 ## Scope / known limitations
@@ -168,5 +170,7 @@ hash independently confirmed above to actually fetch the real gem.
   — every gem is treated as belonging to `["default"]`. If you rely on
   `bundlerEnv`'s `groups` filtering to exclude e.g. a `development`
   group's gems, this won't currently filter them out.
-- Git-sourced gems need a manually-supplied hash (see above) — not a bug,
-  a structural fact about what a `Gemfile.lock` records.
+- Git-sourced gems are fetched at *evaluation* time via
+  `builtins.fetchGit`, not via a substitutable fixed-output derivation
+  like `fetchgit` — repeat evaluations re-run the fetch (git's local
+  caching softens this) rather than hitting a binary-cache substitute.
