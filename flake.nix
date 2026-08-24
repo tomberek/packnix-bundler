@@ -69,6 +69,27 @@
             pname = "anystyle";
             gemdir = ./examples/git-source;
           };
+
+          # A big, real nixpkgs package: Chef development kit
+          # (pkgs/development/tools/chefdk), 289 gems, native extensions
+          # (ffi-yajl etc.) -- the scale test. Its lockfile regenerated
+          # via `bundle lock --add-checksums` resolves a few gems
+          # differently than the ~2020-era one committed to nixpkgs
+          # (rubygems.org's index has moved on since); notably it pulls
+          # in BOTH `fauxhai-ng` and `fauxhai-chef`, which both ship a
+          # `bin/fauxhai` binstub -- a real upstream collision, not a
+          # packnix-bundler bug, worked around the same way any
+          # `bundlerEnv` package would (`ignoreCollisions`).
+          chefdk = buildBundlerApp {
+            inherit pkgs;
+            name = "chefdk-example";
+            gemdir = ./examples/chefdk;
+            buildInputs = [
+              pkgs.perl
+              pkgs.autoconf
+            ];
+            ignoreCollisions = true;
+          };
         }
       );
 

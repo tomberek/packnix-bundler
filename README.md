@@ -76,7 +76,12 @@ comes from.
 
 Lower-level: `packnix-bundler.lib.mkGemset { lockFile = ./Gemfile.lock; }`
 returns the raw gemset attrset directly, if you want to feed it to
-`pkgs.bundlerEnv` yourself or inspect it.
+`pkgs.bundlerEnv` yourself or inspect it. If you call it directly (not
+via `buildBundlerApp`) and your lockfile has a gem with *only*
+platform-qualified spec versions (no bare fallback — see the `chefdk`
+writeup below), also pass `platform` (a Ruby-style platform string, e.g.
+`"x86_64-linux-gnu"`); `buildBundlerApp` derives and passes this for you
+automatically from `pkgs.stdenv.hostPlatform`.
 
 ## Verified example
 
@@ -99,7 +104,7 @@ commit) — `nix build .#git-source` fetches it via `builtins.fetchGit`
 using the `revision` already in the lockfile, no separate hash needed
 anywhere, no `--impure` flag.
 
-## Real-world comparison: nixpkgs' `bundler-audit`
+## Real-world comparison: nixpkgs' `bundler-audit` and `chefdk`
 
 [`pkgs/tools/security/bundler-audit`](https://github.com/NixOS/nixpkgs/tree/master/pkgs/tools/security/bundler-audit)
 is a small, real nixpkgs package using `bundlerEnv` today. Its 3 checked-in
@@ -143,6 +148,40 @@ filtering; without it, `pkgs.bundlerEnv`'s own dependency-expansion logic
 throws `attribute 'bundler' missing` trying to resolve a `bundler`
 gemset entry that (correctly) doesn't exist.
 
+`examples/chefdk/` is [`pkgs/development/tools/chefdk`](https://github.com/NixOS/nixpkgs/tree/master/pkgs/development/tools/chefdk),
+a much bigger real package (290 gems, native extensions like `ffi-yajl`)
+— re-locked the same way (`bundle lock --add-checksums`):
+
+```console
+$ nix build .#chefdk
+$ ./result/bin/chef --version
+ChefDK version: 4.13.3
+```
+
+Building this surfaced two real bugs the smaller examples didn't:
+
+1. **Double-slash fetch URLs.** A `Gemfile.lock`'s `remote:` line always
+   has a trailing slash (`https://rubygems.org/`); nixpkgs' `fetchurl`
+   template appends its own leading `/`, so concatenating verbatim
+   produces `https://rubygems.org//gems/...` — which genuinely 404s
+   against the real server. The small examples never hit this because
+   their gems happened to already be substitutable from a binary cache
+   (same store path regardless of the broken URL); `chefdk`'s 290 gems
+   include enough not-already-cached ones to expose it directly.
+   `mkGemset` now strips the trailing slash to match what a real
+   `bundix`-generated `gemset.nix` stores.
+2. **Wrong platform variant for native-only gems.** Some gems (`ffi`,
+   `nokogiri`) ship *only* platform-qualified spec versions in a
+   locally-resolved lockfile (e.g. `ffi (1.17.4-x86_64-linux-gnu)`), with
+   no plain fallback version at all. `mkGemset` used to pick whichever
+   variant appeared first in the file — on this machine, that happened
+   to be `aarch64-linux-gnu`, producing a gemset entry Bundler's runtime
+   couldn't find installed (`Could not find ffi-1.17.4-aarch64-linux-gnu
+   ... in locally installed gems`). `buildBundlerApp` now derives the
+   correct Ruby-style platform string from `pkgs.stdenv.hostPlatform`
+   (e.g. `x86_64-linux-gnu`) and passes it to `mkGemset` as `platform`,
+   which picks the matching variant when no bare version exists.
+
 ## Tests
 
 `nix flake check` runs `tests/gemset-unit.nix`: `mkGemset` against
@@ -154,12 +193,13 @@ hash independently confirmed above to actually fetch the real gem.
 
 | Path | What |
 |---|---|
-| `flake.nix` | Inputs `nixpkgs` + `packnix`; exposes `lib.mkGemset`, `lib.buildBundlerApp`, `packages.<system>.{example,bundler-audit,git-source}`, `checks.<system>.gemset-unit`. Per-system outputs via `builtins.mapAttrs (system: pkgs: ...) nixpkgs.legacyPackages` (nixpkgs' own top-level `flake.nix` idiom — see the file's comment) rather than a hardcoded systems list. |
-| `lib/mk-gemset.nix` | Parses a `Gemfile.lock` via `packnix.lib.grammars.gemfileLock`, builds a `bundled-common`-compatible gemset attrset. Handles platform-qualified spec versions (matches `bundix`'s own behavior: prefer the platform-suffix-less variant when both exist — confirmed against two real nixpkgs packages' paired `Gemfile.lock`/`gemset.nix`), filters `bundler` out of every gem's `dependencies` (also confirmed against a real `bundix`-generated `gemset.nix` — see the comparison below), and pre-fetches git-sourced gems via `builtins.fetchGit`. |
-| `lib/build-bundler-app.nix` | Thin wrapper: `mkGemset` output fed into `pkgs.bundlerEnv`. |
+| `flake.nix` | Inputs `nixpkgs` + `packnix`; exposes `lib.mkGemset`, `lib.buildBundlerApp`, `packages.<system>.{example,bundler-audit,git-source,chefdk}`, `checks.<system>.gemset-unit`. Per-system outputs via `builtins.mapAttrs (system: pkgs: ...) nixpkgs.legacyPackages` (nixpkgs' own top-level `flake.nix` idiom — see the file's comment) rather than a hardcoded systems list. |
+| `lib/mk-gemset.nix` | Parses a `Gemfile.lock` via `packnix.lib.grammars.gemfileLock`, builds a `bundled-common`-compatible gemset attrset. Picks the right spec variant when a gem has multiple platform-qualified versions (prefer a bare version if one exists, matching `bundix`; otherwise the variant matching the optional `platform` argument — see the `chefdk` writeup below), strips a `Gemfile.lock` remote's trailing slash (also surfaced by `chefdk`), filters `bundler` out of every gem's `dependencies` (confirmed against a real `bundix`-generated `gemset.nix`), and pre-fetches git-sourced gems via `builtins.fetchGit`. |
+| `lib/build-bundler-app.nix` | Thin wrapper: derives a Ruby-style platform string from `pkgs.stdenv.hostPlatform` and feeds `mkGemset`'s output into `pkgs.bundlerEnv`. |
 | `example/` | A real, `bundle`-generated `Gemfile`/`Gemfile.lock` pair with a genuine `CHECKSUMS` section. |
 | `examples/bundler-audit/` | nixpkgs' real `bundler-audit` package's `Gemfile`, lockfile regenerated with `--add-checksums` — see the comparison below. |
 | `examples/git-source/` | A git-sourced gem (`anystyle`, pinned to a real commit). |
+| `examples/chefdk/` | nixpkgs' real `chefdk` package (290 gems) — see the comparison below. |
 | `tests/gemset-unit.nix` | `mkGemset` output vs. a hand-written expected attrset. |
 
 ## Scope / known limitations

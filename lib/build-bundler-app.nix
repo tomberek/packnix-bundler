@@ -23,7 +23,28 @@
   ...
 }@args:
 let
-  gemset = mkGemset { lockFile = lockfile; };
+  # Ruby's own gem-platform naming convention (confirmed against real
+  # Gemfile.lock spec entries, e.g. "ffi (1.17.4-x86_64-linux-gnu)",
+  # "ffi (1.17.1-arm64-darwin)") -- CPU name + "-linux-gnu"/"-linux-musl"
+  # on Linux, CPU name + "-darwin" (no libc suffix at all) on macOS. Used
+  # by mkGemset to pick the right platform-qualified spec variant when a
+  # gem has no bare (platform-independent) version at all -- see that
+  # file's `specRank` for why this matters (picking the wrong platform's
+  # variant produces a gemset entry whose version string doesn't match
+  # what's actually installed, and Bundler's runtime fails to find it).
+  hostPlatform = pkgs.stdenv.hostPlatform;
+  rubyPlatform =
+    if hostPlatform.isDarwin then
+      "${hostPlatform.parsed.cpu.name}-darwin"
+    else if hostPlatform.isLinux then
+      "${hostPlatform.parsed.cpu.name}-linux-${if hostPlatform.isMusl then "musl" else "gnu"}"
+    else
+      null;
+
+  gemset = mkGemset {
+    lockFile = lockfile;
+    platform = rubyPlatform;
+  };
   bundlerEnvArgs = (builtins.removeAttrs args [ "pkgs" ]) // {
     inherit gemfile lockfile gemset;
   };

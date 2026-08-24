@@ -44,6 +44,16 @@
 {
   # Path to a Gemfile.lock, OR its already-read contents as a string.
   lockFile,
+  # Ruby gem platform string to prefer when a gem has ONLY
+  # platform-qualified spec entries and no bare version at all (e.g.
+  # "x86_64-linux-gnu") -- see the comment on `pickSpecsForGem` below for
+  # why this is needed and how it's derived from `pkgs.stdenv.hostPlatform`
+  # by `build-bundler-app.nix`. Defaults to null, meaning "arbitrarily
+  # pick the first platform-qualified variant encountered" -- correct
+  # only when every gem either has a bare version, or the caller doesn't
+  # care which platform variant gets built (rare in practice; almost
+  # every real project should pass this).
+  platform ? null,
 }:
 let
   inherit (packnix.lib) packrat;
@@ -74,6 +84,20 @@ let
   # variants.
   isBareVersion = v: builtins.match "[0-9]+([.][0-9A-Za-z]+)*" v != null;
 
+  # A Gemfile.lock's `remote:` line always includes a trailing slash
+  # (e.g. "https://rubygems.org/"), but nixpkgs' `fetchurl` template
+  # (`gem/default.nix`: `"${remote}/gems/${gemName}-${version}.gem"`)
+  # appends its own leading "/" -- concatenating the two verbatim
+  # produces a double-slash URL, which genuinely 404s against
+  # rubygems.org's real server (confirmed directly: `curl -I
+  # https://rubygems.org//gems/...` -> 404, `https://rubygems.org/gems/...`
+  # -> 200 for the same gem). The real, bundix-generated gemset.nix always
+  # stores `remotes` WITHOUT the trailing slash (confirmed against a real
+  # nixpkgs package's gemset.nix) -- this strips it to match.
+  stripTrailingSlash =
+    s:
+    if builtins.match ".*/" s != null then builtins.substring 0 (builtins.stringLength s - 1) s else s;
+
   # Every spec across every GEM/GIT/PATH block, flattened, each tagged
   # with its source block's type/remote/revision/ref -- a gem name can in
   # principle appear in more than one block (not observed in the corpus,
@@ -89,20 +113,46 @@ let
   ) doc.sources;
 
   # One entry per gem NAME (not per spec/version) -- collapses
-  # platform-qualified variants down to the bare one, per isBareVersion
-  # above. If a gem name has ONLY platform-qualified variants and no bare
-  # one at all (not observed in the corpus, but a real possibility for a
-  # native-extension-only gem), keep the first variant encountered rather
-  # than silently dropping the gem -- better to build with an unverified
-  # platform-specific hash than to omit a dependency the project actually
-  # needs.
+  # platform-qualified variants down to a single choice, in priority
+  # order: (1) a bare version, if one exists (matches nixpkgs' `bundix`
+  # exactly -- confirmed against two real nixpkgs packages' paired
+  # Gemfile.lock/gemset.nix, both of which store just the bare-version
+  # hash for gems like `ffi` that ship platform-specific variants
+  # ALONGSIDE a bare one); (2) failing that, the variant whose platform
+  # suffix matches `platform`, if given -- REAL bug, not hypothetical:
+  # confirmed directly against nixpkgs' own `chefdk` package re-locked
+  # for a specific host platform (not just "ruby"), where gems like
+  # `nokogiri`/`ffi` have ONLY platform-qualified variants (no bare
+  # fallback at all) -- picking an arbitrary one (e.g. the
+  # aarch64-linux-gnu variant on an x86_64-linux build machine) produces
+  # a gemset entry whose `version` doesn't match what Bundler's runtime
+  # `Bundler.setup` expects to find installed for the ACTUAL platform,
+  # failing with "Could not find <gem>-<version>-<other-platform> in
+  # locally installed gems"; (3) failing that too (no `platform` given,
+  # or no variant matches it), the first variant encountered -- still
+  # better than dropping the gem, but likely wrong for a real build.
+  specPlatformSuffix =
+    v:
+    let
+      m = builtins.match "[0-9]+([.][0-9A-Za-z]+)*-(.*)" v;
+    in
+    if m == null then null else builtins.elemAt m 1;
+
+  specRank =
+    v:
+    if isBareVersion v then
+      0
+    else if platform != null && specPlatformSuffix v == platform then
+      1
+    else
+      2;
+
   byGemName = builtins.foldl' (
     acc: entry:
     let
       name = entry.spec.name;
       existing = acc.${name} or null;
-      preferNew =
-        existing == null || (!isBareVersion existing.spec.version && isBareVersion entry.spec.version);
+      preferNew = existing == null || specRank entry.spec.version < specRank existing.spec.version;
     in
     if preferNew then acc // { ${name} = entry; } else acc
   ) { } allSpecEntries;
@@ -135,7 +185,7 @@ let
       {
         source = {
           type = "gem";
-          remotes = [ entry.remote ];
+          remotes = [ (stripTrailingSlash entry.remote) ];
           sha256 =
             if hex == null then
               throw "mkGemset: no CHECKSUMS entry for '${key}' -- this Gemfile.lock either predates Bundler 2.7's CHECKSUMS section, or is missing an entry for this gem. Regenerate the lockfile with a Bundler version that writes CHECKSUMS."
