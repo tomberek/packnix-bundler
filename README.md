@@ -230,17 +230,46 @@ Building this surfaced two real bugs the smaller examples didn't:
 exactly (dependencies, groups, platforms, source, version) — the same
 hash independently confirmed above to actually fetch the real gem.
 
+## `fastlane`: a fresh, cleanly-building real package
+
+`examples/fastlane/` is [`pkgs/tools/admin/fastlane`](https://github.com/NixOS/nixpkgs/tree/master/pkgs/tools/admin/fastlane)
+— a real, widely-used mobile CI/CD tool. Unlike `bundler-audit`/`chefdk`
+above (both re-locked from an *old*, previously-committed nixpkgs
+lockfile, deliberately kept old to compare directly against a real
+`bundix`-generated `gemset.nix`), its `Gemfile` pins no version at all
+(`gem 'fastlane'`), so re-locking pulls the *current* release (100
+gems):
+
+```console
+$ nix build .#fastlane
+$ ./result/bin/fastlane --version
+fastlane 2.238.0
+```
+
+Builds cleanly with zero `gemConfig`/native-toolchain overrides needed
+— a useful contrast with `chefdk`'s native extensions and a real,
+attempted-but-abandoned `gitlab`/`discourse` example (591 and 262 gems
+respectively) that hit a wall of *unrelated* native C-extension bitrot
+against a current Ruby/OpenSSL/GCC toolchain (an old `openssl` gem's
+removed ASN1 macros, `prometheus-client-mmap`'s removed Ruby C-API
+calls, `grpc`'s vendored-boringssl vs. nixpkgs' gcc-14 compat patch) —
+none of it a `packnix-bundler` bug, just what happens building a
+2022-era Ruby native gemset against a 2026 toolchain. `fastlane`
+sidesteps this entirely by resolving against gems still actively
+maintained today.
+
 ## Layout
 
 | Path | What |
 |---|---|
-| `flake.nix` | Inputs `nixpkgs` + `packnix`; exposes `lib.mkGemset`, `lib.buildBundlerApp`, `packages.<system>.{example,bundler-audit,git-source,chefdk}`, `checks.<system>.gemset-unit`. Per-system outputs via `builtins.mapAttrs (system: pkgs: ...) nixpkgs.legacyPackages` (nixpkgs' own top-level `flake.nix` idiom — see the file's comment) rather than a hardcoded systems list. |
+| `flake.nix` | Inputs `nixpkgs` + `packnix`; exposes `lib.mkGemset`, `lib.buildBundlerApp`, `packages.<system>.{example,bundler-audit,git-source,chefdk,fastlane}`, `checks.<system>.gemset-unit`. Per-system outputs via `builtins.mapAttrs (system: pkgs: ...) nixpkgs.legacyPackages` (nixpkgs' own top-level `flake.nix` idiom — see the file's comment) rather than a hardcoded systems list. |
 | `lib/mk-gemset.nix` | Parses a `Gemfile.lock` via `packnix.lib.grammars.gemfileLock`, builds a `bundled-common`-compatible gemset attrset. Picks the right spec variant when a gem has multiple platform-qualified versions (prefer a bare version if one exists, matching `bundix`; otherwise the variant matching the optional `platform` argument — see the `chefdk` writeup below), strips a `Gemfile.lock` remote's trailing slash (also surfaced by `chefdk`), filters `bundler` out of every gem's `dependencies` (confirmed against a real `bundix`-generated `gemset.nix`), pre-fetches git-sourced gems via `builtins.fetchGit`, and (given an optional `gemfile`) resolves real Bundler group membership per gem via `packnix.lib.grammars.gemfile` — see [Groups filtering](#groups-filtering). |
 | `lib/build-bundler-app.nix` | Thin wrapper: derives a Ruby-style platform string from `pkgs.stdenv.hostPlatform`, feeds `mkGemset`'s output (including the `gemfile` it already resolves for `bundlerEnv` itself) into `pkgs.bundlerEnv`. |
 | `example/` | A real, `bundle`-generated `Gemfile`/`Gemfile.lock` pair with a genuine `CHECKSUMS` section. |
 | `examples/bundler-audit/` | nixpkgs' real `bundler-audit` package's `Gemfile`, lockfile regenerated with `--add-checksums` — see the comparison below. |
 | `examples/git-source/` | A git-sourced gem (`anystyle`, pinned to a real commit). |
 | `examples/chefdk/` | nixpkgs' real `chefdk` package (290 gems) — see the comparison below. |
+| `examples/fastlane/` | nixpkgs' real `fastlane` package, re-locked to the current release (100 gems) — builds with zero native-toolchain overrides. See [above](#fastlane-a-fresh-cleanly-building-real-package). |
 | `tests/gemset-unit.nix` | `mkGemset` output vs. a hand-written expected attrset, plus the groups-filtering regression test (`tests/fixtures/groups/`) — see [Groups filtering](#groups-filtering). |
 
 ## Scope / known limitations

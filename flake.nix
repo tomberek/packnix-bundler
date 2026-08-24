@@ -90,6 +90,21 @@
             ];
             ignoreCollisions = true;
           };
+
+          # fastlane (pkgs/tools/admin/fastlane) -- a real, widely-used
+          # nixpkgs package (mobile CI/CD tooling). Its Gemfile pins no
+          # fastlane version (`gem 'fastlane'`), so re-locking pulls the
+          # current release -- a deliberately different vintage than
+          # chefdk/bundler-audit above: those two exercise mkGemset
+          # against OLD, previously-committed nixpkgs lockfiles (useful
+          # for the bug comparisons in the README), whereas this one
+          # shows a FRESH real-world lockfile building cleanly with no
+          # native-toolchain overrides needed at all.
+          fastlane = buildBundlerApp {
+            inherit pkgs;
+            pname = "fastlane";
+            gemdir = ./examples/fastlane;
+          };
         }
       );
 
