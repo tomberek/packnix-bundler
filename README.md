@@ -145,6 +145,24 @@ commit) — `nix build .#git-source` fetches it via `builtins.fetchGit`
 using the `revision` already in the lockfile, no separate hash needed
 anywhere, no `--impure` flag.
 
+`examples/anystyle/` demonstrates a `PATH` source: the current, real
+[`anystyle`](https://github.com/inukshuk/anystyle) v1.5.0 project itself
+(its `Gemfile` does `gemspec`, so Bundler treats the project's own root
+gem as a `PATH`-sourced dependency), alongside 5 real `group` blocks and
+its ordinary RubyGems dependencies in one lockfile — `nix build
+.#path-source` builds it and its `lib/anystyle.rb` really loads. Building
+this surfaced a real bug: `mkGemset` used to store a `PATH` source's
+`remote:` (e.g. `.` for the project's own root gem) as a bare string,
+which nixpkgs' `pathDerivation` (`outPath = "${path}"`) took completely
+literally — meaningless outside the original checkout, so the gem
+silently failed to install at all, with no error. `mkGemset` now
+resolves it against the lockfile's own directory, matching what a real
+`bundix`-generated `gemset.nix` does (`path = ./.;`, a Nix path relative
+to that committed file's own location). `examples/anystyle/lib/` omits
+the project's two trained CRF model files (`support/{finder,parser}.mod`,
+~500KB combined) — not `require`d by `lib/anystyle.rb` at load time, so
+irrelevant to demonstrating the actual fix.
+
 ## Real-world comparison: nixpkgs' `bundler-audit` and `chefdk`
 
 [`pkgs/tools/security/bundler-audit`](https://github.com/NixOS/nixpkgs/tree/master/pkgs/tools/security/bundler-audit)
@@ -262,15 +280,16 @@ maintained today.
 
 | Path | What |
 |---|---|
-| `flake.nix` | Inputs `nixpkgs` + `packnix`; exposes `lib.mkGemset`, `lib.buildBundlerApp`, `packages.<system>.{example,bundler-audit,git-source,chefdk,fastlane}`, `checks.<system>.gemset-unit`. Per-system outputs via `builtins.mapAttrs (system: pkgs: ...) nixpkgs.legacyPackages` (nixpkgs' own top-level `flake.nix` idiom — see the file's comment) rather than a hardcoded systems list. |
-| `lib/mk-gemset.nix` | Parses a `Gemfile.lock` via `packnix.lib.grammars.gemfileLock`, builds a `bundled-common`-compatible gemset attrset. Picks the right spec variant when a gem has multiple platform-qualified versions (prefer a bare version if one exists, matching `bundix`; otherwise the variant matching the optional `platform` argument — see the `chefdk` writeup below), strips a `Gemfile.lock` remote's trailing slash (also surfaced by `chefdk`), filters `bundler` out of every gem's `dependencies` (confirmed against a real `bundix`-generated `gemset.nix`), pre-fetches git-sourced gems via `builtins.fetchGit`, and (given an optional `gemfile`) resolves real Bundler group membership per gem via `packnix.lib.grammars.gemfile` — see [Groups filtering](#groups-filtering). |
+| `flake.nix` | Inputs `nixpkgs` + `packnix`; exposes `lib.mkGemset`, `lib.buildBundlerApp`, `packages.<system>.{example,bundler-audit,git-source,path-source,chefdk,fastlane}`, `checks.<system>.gemset-unit`. Per-system outputs via `builtins.mapAttrs (system: pkgs: ...) nixpkgs.legacyPackages` (nixpkgs' own top-level `flake.nix` idiom — see the file's comment) rather than a hardcoded systems list. |
+| `lib/mk-gemset.nix` | Parses a `Gemfile.lock` via `packnix.lib.grammars.gemfileLock`, builds a `bundled-common`-compatible gemset attrset. Picks the right spec variant when a gem has multiple platform-qualified versions (prefer a bare version if one exists, matching `bundix`; otherwise the variant matching the optional `platform` argument — see the `chefdk` writeup below), strips a `Gemfile.lock` remote's trailing slash (also surfaced by `chefdk`), filters `bundler` out of every gem's `dependencies` (confirmed against a real `bundix`-generated `gemset.nix`), pre-fetches git-sourced gems via `builtins.fetchGit`, resolves `PATH`-sourced gems' relative paths against the lockfile's own directory (also surfaced by a real example — see above), and (given an optional `gemfile`) resolves real Bundler group membership per gem via `packnix.lib.grammars.gemfile` — see [Groups filtering](#groups-filtering). |
 | `lib/build-bundler-app.nix` | Thin wrapper: derives a Ruby-style platform string from `pkgs.stdenv.hostPlatform`, feeds `mkGemset`'s output (including the `gemfile` it already resolves for `bundlerEnv` itself) into `pkgs.bundlerEnv`. |
 | `example/` | A real, `bundle`-generated `Gemfile`/`Gemfile.lock` pair with a genuine `CHECKSUMS` section. |
 | `examples/bundler-audit/` | nixpkgs' real `bundler-audit` package's `Gemfile`, lockfile regenerated with `--add-checksums` — see the comparison below. |
 | `examples/git-source/` | A git-sourced gem (`anystyle`, pinned to a real commit). |
+| `examples/anystyle/` | The real, current `anystyle` project itself — a `PATH` source plus 5 real `group` blocks. See [above](#verified-example). |
 | `examples/chefdk/` | nixpkgs' real `chefdk` package (290 gems) — see the comparison below. |
 | `examples/fastlane/` | nixpkgs' real `fastlane` package, re-locked to the current release (100 gems) — builds with zero native-toolchain overrides. See [above](#fastlane-a-fresh-cleanly-building-real-package). |
-| `tests/gemset-unit.nix` | `mkGemset` output vs. a hand-written expected attrset, plus the groups-filtering regression test (`tests/fixtures/groups/`) — see [Groups filtering](#groups-filtering). |
+| `tests/gemset-unit.nix` | `mkGemset` output vs. a hand-written expected attrset, plus the groups-filtering (`tests/fixtures/groups/`) and PATH-source (`tests/fixtures/path-source/`) regression tests. |
 
 ## Scope / known limitations
 

@@ -75,6 +75,22 @@ let
     else
       throw "mkGemset: lockFile must be a path or a string";
 
+  # A `PATH` source's `remote:` (e.g. "." for a project's own gemspec-ed
+  # root gem, or a relative subdirectory for a vendored gem) is relative
+  # to wherever `bundle` was actually run -- which for us is always
+  # `lockFile`'s own directory, mirroring how a real, `bundix`-generated
+  # gemset.nix stores it (`path = ./.;`, a Nix path relative to that
+  # committed file's own location, not the bare string a Gemfile.lock
+  # has). Only resolvable when `lockFile` is an actual Nix path (not a
+  # bare string with no directory to resolve against, e.g. a lockfile's
+  # contents passed in directly) -- `mkSourceAndSrc`'s "path" branch
+  # throws a clear error in that case rather than silently keeping the
+  # meaningless bare string, which is what happened before this comment
+  # (confirmed directly: `pathDerivation`'s `outPath = "${path}"` became
+  # literally the string ".", and the gem silently failed to install at
+  # all -- no error, just missing from the built environment).
+  lockFileDir = if builtins.isPath lockFile then builtins.dirOf lockFile else null;
+
   doc =
     (packrat.run {
       grammar = gemfileLockGrammar.grammar;
@@ -264,11 +280,17 @@ let
         };
       }
     else
-      # "path"
+      # "path" -- resolved against `lockFileDir`, see that binding's
+      # comment for why a bare `entry.remote` string is never usable
+      # directly.
       {
         source = {
           type = "path";
-          path = entry.remote;
+          path =
+            if lockFileDir == null then
+              throw "mkGemset: lockFile must be a path (not a bare string) to resolve a PATH source's relative path ('${entry.remote}')"
+            else
+              lockFileDir + ("/" + entry.remote);
         };
       };
 

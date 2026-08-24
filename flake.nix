@@ -105,6 +105,25 @@
             pname = "fastlane";
             gemdir = ./examples/fastlane;
           };
+
+          # anystyle-cli's real, CURRENT Gemfile (github:inukshuk/anystyle
+          # v1.5.0) -- a `PATH` source (`gemspec` in the Gemfile resolves
+          # to the project's own root gem), a real `GIT`-free dependency
+          # graph, and 5 real `group` blocks all in one project. Building
+          # this surfaced a real bug: `mkGemset` stored a PATH source's
+          # `remote:` (e.g. "." from the lockfile) as a bare string,
+          # which `pathDerivation`'s `outPath = "${path}"` then took
+          # completely literally -- the gem silently failed to install
+          # at all, no error, just missing from the built environment.
+          # `mkGemset` now resolves it against the lockfile's own
+          # directory (mirroring a real `bundix`-generated `gemset.nix`'s
+          # `path = ./.;`), confirmed by checking the built environment
+          # actually contains anystyle's real `lib/anystyle.rb`.
+          path-source = buildBundlerApp {
+            inherit pkgs;
+            pname = "anystyle";
+            gemdir = ./examples/anystyle;
+          };
         }
       );
 

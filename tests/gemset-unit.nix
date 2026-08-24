@@ -87,6 +87,31 @@ let
   withTestIncludesRspec = builtins.any (n: builtins.match "rspec-[0-9].*" n != null) withTestGems;
 
   groupsFilteringWorks = groupsGemsetExpected.groups && defaultExcludesRspec && withTestIncludesRspec;
+
+  # PATH-source regression test: fixtures/path-source/{Gemfile,
+  # Gemfile.lock,mygem/} declares `gem 'mygem', path: 'mygem'`. Before
+  # the fix, mkGemset stored a PATH source's `remote:` (here "mygem")
+  # verbatim as a bare string, which nixpkgs' `pathDerivation` (`outPath
+  # = "${path}"`) took completely literally -- meaningless outside the
+  # original checkout, so the gem silently failed to install with no
+  # error at all (confirmed directly against examples/anystyle/, a real,
+  # much bigger PATH-sourced project). Verifies BOTH that `mkGemset`
+  # resolves the path relative to the lockfile's own directory (matching
+  # a real `bundix`-generated gemset.nix's `path = ./.;` idiom) AND that
+  # the built environment actually contains the gem's real file, not
+  # just that the gemset attrset's `source.path` looks plausible.
+  pathSourceGemset = mkGemset { lockFile = ./fixtures/path-source/Gemfile.lock; };
+  pathSourceExpected = {
+    resolvesToRealDirectory = builtins.pathExists (
+      pathSourceGemset.mygem.source.path + "/lib/mygem.rb"
+    );
+  };
+  pathSourceBuild = buildBundlerApp {
+    inherit pkgs;
+    pname = "mygem";
+    gemdir = ./fixtures/path-source;
+  };
+  pathSourceBuildContainsRealFile = builtins.pathExists (pathSourceBuild + "/lib/mygem.rb");
 in
 pkgs.runCommand "packnix-bundler-gemset-unit-test"
   {
@@ -97,6 +122,8 @@ pkgs.runCommand "packnix-bundler-gemset-unit-test"
         groupsGemset
         defaultBuild
         withTestBuild
+        pathSourceGemset
+        pathSourceBuild
         ;
     };
   }
@@ -106,6 +133,10 @@ pkgs.runCommand "packnix-bundler-gemset-unit-test"
         throw "mkGemset output for example/Gemfile.lock did not match the expected gemset -- got: ${builtins.toJSON gemset}"
       else if !groupsFilteringWorks then
         throw "Gemfile groups filtering regression: groupsGemset=${builtins.toJSON groupsGemset}, defaultGems=${builtins.toJSON defaultGems}, withTestGems=${builtins.toJSON withTestGems}"
+      else if !pathSourceExpected.resolvesToRealDirectory then
+        throw "PATH source regression: mkGemset's resolved path does not exist or is missing lib/mygem.rb -- got: ${builtins.toJSON pathSourceGemset}"
+      else if !pathSourceBuildContainsRealFile then
+        throw "PATH source regression: built environment is missing mygem's real lib/mygem.rb"
       else
         "echo PASS > $out"
     }
