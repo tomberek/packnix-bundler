@@ -43,6 +43,7 @@ let
 
   gemset = mkGemset {
     lockFile = lockfile;
+    inherit gemfile;
     platform = rubyPlatform;
   };
   bundlerEnvArgs = (builtins.removeAttrs args [ "pkgs" ]) // {

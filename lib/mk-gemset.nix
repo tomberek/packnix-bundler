@@ -44,6 +44,15 @@
 {
   # Path to a Gemfile.lock, OR its already-read contents as a string.
   lockFile,
+  # Path to the Gemfile.lock's companion Gemfile, OR its already-read
+  # contents as a string, OR null to skip group parsing entirely (every
+  # gem then gets `["default"]`, same as before this parameter existed).
+  # Defaults to null rather than "guess a sibling Gemfile next to
+  # lockFile" -- unlike lockFile (always mandatory and well-defined),
+  # silently trying-and-falling-back on a guessed path would make a
+  # missing/renamed Gemfile fail invisibly; `build-bundler-app.nix`
+  # passes this explicitly since it already resolves a `gemfile` path.
+  gemfile ? null,
   # Ruby gem platform string to prefer when a gem has ONLY
   # platform-qualified spec entries and no bare version at all (e.g.
   # "x86_64-linux-gnu") -- see the comment on `pickSpecsForGem` below for
@@ -58,6 +67,7 @@
 let
   inherit (packnix.lib) packrat;
   gemfileLockGrammar = packnix.lib.grammars.gemfileLock;
+  gemfileGrammar = packnix.lib.grammars.gemfile;
 
   contents =
     if builtins.isPath lockFile || builtins.isString lockFile then
@@ -70,6 +80,41 @@ let
       grammar = gemfileLockGrammar.grammar;
       handlers = gemfileLockGrammar.handlers;
     } 0 contents).DOCUMENT;
+
+  # `Gemfile.lock` never records Bundler *groups* -- only the `Gemfile`
+  # does (see `grammar/gemfile.nix` in packnix). Parsing a real Gemfile
+  # is inherently best-effort (it's arbitrary Ruby; see that file's
+  # header for exact scope), so any failure here -- no `gemfile` given,
+  # the path doesn't exist, or the parse itself fails on an out-of-scope
+  # construct -- degrades to `groupsByName = {}`, which makes every gem
+  # fall back to `["default"]` below: identical to this parameter not
+  # existing at all, never a hard error. Groups are additive information
+  # (narrowing what `bundlerEnv` installs), not required for a build's
+  # correctness, so "silently get no group filtering" is the right
+  # default rather than throwing.
+  gemfileContents =
+    if gemfile == null then
+      null
+    else if builtins.isPath gemfile || builtins.isString gemfile then
+      (if builtins.pathExists gemfile then builtins.readFile gemfile else gemfile)
+    else
+      throw "mkGemset: gemfile must be a path, a string, or null";
+
+  gemfileItems =
+    if gemfileContents == null then
+      null
+    else
+      (packrat.run {
+        grammar = gemfileGrammar.grammar;
+        handlers = gemfileGrammar.handlers;
+      } 0 gemfileContents).DOCUMENT;
+
+  groupsByName = builtins.listToAttrs (
+    map (item: {
+      name = item.name;
+      value = if item.groups == [ ] then [ "default" ] else item.groups;
+    }) (if gemfileItems == false || gemfileItems == null then [ ] else gemfileItems)
+  );
 
   # A "bare" version has no platform suffix (e.g. "1.17.2", or
   # "1.16.0.rc1" -- Ruby pre-release versions use dots, never hyphens;
@@ -242,7 +287,11 @@ let
       # committed gemset.nix's `dependencies` list omits it -- bundix
       # applies exactly this filter too, not something specific to us.
       dependencies = map (d: d.name) (builtins.filter (d: d.name != "bundler") entry.spec.dependencies);
-      groups = [ "default" ]; # Gemfile.lock doesn't record Bundler groups (only the Gemfile does) -- every gem is treated as belonging to every requested group.
+      # From the parsed Gemfile when one was given and parsed
+      # successfully; ["default"] for any gem it doesn't mention (outside
+      # every `group` block/kwarg) OR when no usable Gemfile group
+      # information exists at all (see `groupsByName`'s comment above).
+      groups = groupsByName.${name} or [ "default" ];
       platforms = [ ];
       version = entry.spec.version;
     }

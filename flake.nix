@@ -96,7 +96,7 @@
       checks = perSystem (
         { pkgs, ... }:
         {
-          gemset-unit = import ./tests/gemset-unit.nix { inherit pkgs mkGemset; };
+          gemset-unit = import ./tests/gemset-unit.nix { inherit pkgs mkGemset buildBundlerApp; };
         }
       );
     };

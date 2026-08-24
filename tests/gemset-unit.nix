@@ -15,7 +15,11 @@
 # instead of hitting the URL directly (see lib/mk-gemset.nix's
 # `stripTrailingSlash` for the fix, surfaced by a much larger example
 # with many not-already-cached gems).
-{ pkgs, mkGemset }:
+{
+  pkgs,
+  mkGemset,
+  buildBundlerApp,
+}:
 let
   gemset = mkGemset { lockFile = ../example/Gemfile.lock; };
 
@@ -34,18 +38,75 @@ let
   };
 
   passed = gemset == expected;
+
+  # Groups regression test: fixtures/groups/{Gemfile,Gemfile.lock} has
+  # `json` (no group -> "default") and `rspec` inside `group :test do`.
+  # Verifies BOTH that mkGemset resolves the right `groups` per gem (not
+  # just that it parses without erroring) AND that this actually changes
+  # what `pkgs.bundlerEnv` installs -- narrowing `groups` to exclude
+  # "test" must genuinely leave `rspec` itself out of the built env
+  # (transitive deps like rspec-core stay, since they're not directly
+  # named in the Gemfile and so default to "default" -- expected
+  # `bundlerEnv` behavior, not a bug: see `groupMatches`/`filterGemset`
+  # in nixpkgs' bundled-common/functions.nix).
+  groupsGemset = mkGemset {
+    lockFile = ./fixtures/groups/Gemfile.lock;
+    gemfile = ./fixtures/groups/Gemfile;
+  };
+  groupsGemsetExpected = {
+    groups = groupsGemset.json.groups == [ "default" ] && groupsGemset.rspec.groups == [ "test" ];
+  };
+
+  defaultBuild = buildBundlerApp {
+    inherit pkgs;
+    pname = "json";
+    gemdir = ./fixtures/groups;
+    groups = [ "default" ];
+  };
+  withTestBuild = buildBundlerApp {
+    inherit pkgs;
+    pname = "json";
+    gemdir = ./fixtures/groups;
+    groups = [
+      "default"
+      "test"
+    ];
+  };
+
+  gemNames = drv: builtins.attrNames (builtins.readDir "${drv}/lib/ruby/gems");
+  installedGemDirNames =
+    drv:
+    let
+      rubyGemsDir = "${drv}/lib/ruby/gems/" + builtins.head (gemNames drv) + "/gems";
+    in
+    builtins.attrNames (builtins.readDir rubyGemsDir);
+
+  defaultGems = installedGemDirNames defaultBuild;
+  withTestGems = installedGemDirNames withTestBuild;
+  defaultExcludesRspec = !(builtins.any (n: builtins.match "rspec-[0-9].*" n != null) defaultGems);
+  withTestIncludesRspec = builtins.any (n: builtins.match "rspec-[0-9].*" n != null) withTestGems;
+
+  groupsFilteringWorks = groupsGemsetExpected.groups && defaultExcludesRspec && withTestIncludesRspec;
 in
 pkgs.runCommand "packnix-bundler-gemset-unit-test"
   {
     passthru = {
-      inherit gemset expected;
+      inherit
+        gemset
+        expected
+        groupsGemset
+        defaultBuild
+        withTestBuild
+        ;
     };
   }
   ''
     ${
-      if passed then
-        "echo PASS > $out"
-      else
+      if !passed then
         throw "mkGemset output for example/Gemfile.lock did not match the expected gemset -- got: ${builtins.toJSON gemset}"
+      else if !groupsFilteringWorks then
+        throw "Gemfile groups filtering regression: groupsGemset=${builtins.toJSON groupsGemset}, defaultGems=${builtins.toJSON defaultGems}, withTestGems=${builtins.toJSON withTestGems}"
+      else
+        "echo PASS > $out"
     }
   ''

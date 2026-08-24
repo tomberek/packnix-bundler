@@ -72,7 +72,11 @@ RubyGems-sourced deps — regenerate it with `bundle lock
 `buildBundlerApp` is a thin wrapper around `pkgs.bundlerEnv` — every
 other `bundlerEnv` argument (`groups`, `ruby`, `gemConfig`, `postBuild`,
 etc.) passes straight through. The only thing replaced is where `gemset`
-comes from.
+comes from. `groups` filtering actually works: `mkGemset` parses the
+project's `Gemfile` (via packnix's `grammar/gemfile.nix`) to recover
+each gem's real Bundler group (`group :test do...end` blocks, inline
+`group:`/`groups:` kwargs) — see [Groups filtering](#groups-filtering)
+below.
 
 Lower-level: `packnix-bundler.lib.mkGemset { lockFile = ./Gemfile.lock; }`
 returns the raw gemset attrset directly, if you want to feed it to
@@ -81,7 +85,44 @@ via `buildBundlerApp`) and your lockfile has a gem with *only*
 platform-qualified spec versions (no bare fallback — see the `chefdk`
 writeup below), also pass `platform` (a Ruby-style platform string, e.g.
 `"x86_64-linux-gnu"`); `buildBundlerApp` derives and passes this for you
-automatically from `pkgs.stdenv.hostPlatform`.
+automatically from `pkgs.stdenv.hostPlatform`. Also pass `gemfile` (a
+path, or its contents as a string) for real `groups` values — omit it
+(or if it fails to parse) and every gem falls back to `["default"]`,
+same as not having group information at all.
+
+## Groups filtering
+
+`Gemfile.lock` never records which Bundler *group* a gem belongs to —
+only the `Gemfile` does. Without that information, nixpkgs'
+`bundlerEnv`'s `groups` argument (meant to let you exclude e.g. a
+`development`/`test` group from a production build) is a silent no-op:
+every gem ends up tagged `["default"]`, which always satisfies
+`groupMatches` regardless of what `groups` a caller passes (confirmed by
+reading `bundled-common/functions.nix`).
+
+`mkGemset` fixes this by parsing the actual `Gemfile` (packnix's
+`grammar/gemfile.nix` — a real, if intentionally scoped-down, Bundler
+DSL parser; see that file's header for exact scope/limitations, e.g.
+`gemspec`/`eval_gemfile`/`Dir.glob` aren't modeled) and resolving each
+gem's real group set, so that:
+
+```nix
+packnix-bundler.lib.buildBundlerApp {
+  inherit pkgs;
+  name = "my-ruby-app";
+  gemdir = ./.;
+  groups = [ "default" ]; # excludes anything declared inside `group :test do ... end`
+}
+```
+
+genuinely excludes a gem declared only inside `group :test do ... end`
+from the built environment, not just from `gemset.nix`'s bookkeeping.
+
+Verified end-to-end in `tests/gemset-unit.nix` (part of `nix flake
+check`): a fixture Gemfile with `rspec` inside `group :test do...end`
+actually disappears from a build's installed gems when `groups =
+["default"]`, and reappears when `groups = ["default" "test"]` — not
+just that `mkGemset`'s output attrset has the right `groups` field.
 
 ## Verified example
 
@@ -194,22 +235,22 @@ hash independently confirmed above to actually fetch the real gem.
 | Path | What |
 |---|---|
 | `flake.nix` | Inputs `nixpkgs` + `packnix`; exposes `lib.mkGemset`, `lib.buildBundlerApp`, `packages.<system>.{example,bundler-audit,git-source,chefdk}`, `checks.<system>.gemset-unit`. Per-system outputs via `builtins.mapAttrs (system: pkgs: ...) nixpkgs.legacyPackages` (nixpkgs' own top-level `flake.nix` idiom — see the file's comment) rather than a hardcoded systems list. |
-| `lib/mk-gemset.nix` | Parses a `Gemfile.lock` via `packnix.lib.grammars.gemfileLock`, builds a `bundled-common`-compatible gemset attrset. Picks the right spec variant when a gem has multiple platform-qualified versions (prefer a bare version if one exists, matching `bundix`; otherwise the variant matching the optional `platform` argument — see the `chefdk` writeup below), strips a `Gemfile.lock` remote's trailing slash (also surfaced by `chefdk`), filters `bundler` out of every gem's `dependencies` (confirmed against a real `bundix`-generated `gemset.nix`), and pre-fetches git-sourced gems via `builtins.fetchGit`. |
-| `lib/build-bundler-app.nix` | Thin wrapper: derives a Ruby-style platform string from `pkgs.stdenv.hostPlatform` and feeds `mkGemset`'s output into `pkgs.bundlerEnv`. |
+| `lib/mk-gemset.nix` | Parses a `Gemfile.lock` via `packnix.lib.grammars.gemfileLock`, builds a `bundled-common`-compatible gemset attrset. Picks the right spec variant when a gem has multiple platform-qualified versions (prefer a bare version if one exists, matching `bundix`; otherwise the variant matching the optional `platform` argument — see the `chefdk` writeup below), strips a `Gemfile.lock` remote's trailing slash (also surfaced by `chefdk`), filters `bundler` out of every gem's `dependencies` (confirmed against a real `bundix`-generated `gemset.nix`), pre-fetches git-sourced gems via `builtins.fetchGit`, and (given an optional `gemfile`) resolves real Bundler group membership per gem via `packnix.lib.grammars.gemfile` — see [Groups filtering](#groups-filtering). |
+| `lib/build-bundler-app.nix` | Thin wrapper: derives a Ruby-style platform string from `pkgs.stdenv.hostPlatform`, feeds `mkGemset`'s output (including the `gemfile` it already resolves for `bundlerEnv` itself) into `pkgs.bundlerEnv`. |
 | `example/` | A real, `bundle`-generated `Gemfile`/`Gemfile.lock` pair with a genuine `CHECKSUMS` section. |
 | `examples/bundler-audit/` | nixpkgs' real `bundler-audit` package's `Gemfile`, lockfile regenerated with `--add-checksums` — see the comparison below. |
 | `examples/git-source/` | A git-sourced gem (`anystyle`, pinned to a real commit). |
 | `examples/chefdk/` | nixpkgs' real `chefdk` package (290 gems) — see the comparison below. |
-| `tests/gemset-unit.nix` | `mkGemset` output vs. a hand-written expected attrset. |
+| `tests/gemset-unit.nix` | `mkGemset` output vs. a hand-written expected attrset, plus the groups-filtering regression test (`tests/fixtures/groups/`) — see [Groups filtering](#groups-filtering). |
 
 ## Scope / known limitations
 
-- Inherits every scope limitation of `grammar/gemfile-lock.nix` (see
-  packnix's README) — e.g. Bundler `PLUGIN SOURCES` aren't parsed.
-- Gemfile.lock doesn't record Bundler *groups* (only the `Gemfile` does)
-  — every gem is treated as belonging to `["default"]`. If you rely on
-  `bundlerEnv`'s `groups` filtering to exclude e.g. a `development`
-  group's gems, this won't currently filter them out.
+- Inherits every scope limitation of `grammar/gemfile-lock.nix` AND
+  `grammar/gemfile.nix` (see packnix's README) — e.g. Bundler `PLUGIN
+  SOURCES` aren't parsed, and a `Gemfile` using `gemspec`/
+  `eval_gemfile`/`Dir.glob ... do |f| ... end` to declare groups falls
+  back to `["default"]` for every gem, same as not passing `gemfile` at
+  all.
 - Git-sourced gems are fetched at *evaluation* time via
   `builtins.fetchGit`, not via a substitutable fixed-output derivation
   like `fetchgit` — repeat evaluations re-run the fetch (git's local
