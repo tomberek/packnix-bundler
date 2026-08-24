@@ -12,17 +12,8 @@
       mkGemset = import ./lib/mk-gemset.nix { inherit packnix; };
       buildBundlerApp = import ./lib/build-bundler-app.nix { inherit mkGemset; };
 
-      # `nixpkgs.legacyPackages` is already an attrset of one `pkgs` per
-      # supported system -- `builtins.mapAttrs` over it directly gives
-      # every per-system output nixpkgs' own top-level flake.nix produces
-      # (see its `forAllSystems`/`genAttrs systems` there), without this
-      # flake needing to declare its own systems list at all. Contrast
-      # with the previous version of this file, which hardcoded
-      # `[ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ]`
-      # via `nixpkgs.lib.genAttrs` -- functionally the same result, but
-      # that list has to be kept in sync by hand as new systems are
-      # added/dropped, where mapAttrs-over-legacyPackages tracks whatever
-      # nixpkgs itself already supports.
+      # One `pkgs` per system nixpkgs itself supports, without this
+      # flake needing to declare its own systems list.
       perSystem =
         f:
         builtins.mapAttrs (
@@ -38,19 +29,17 @@
       packages = perSystem (
         { pkgs, ... }:
         {
-          # A minimal single-gem project (this repo's own example/) --
-          # smallest possible demonstration of the CHECKSUMS pure-fetch
-          # path.
+          # Smallest possible demonstration of the CHECKSUMS pure-fetch
+          # path: a single-gem project.
           example = buildBundlerApp {
             inherit pkgs;
             name = "packnix-bundler-example";
             gemdir = ./example;
           };
 
-          # A real nixpkgs package (pkgs/tools/security/bundler-audit),
-          # built the packnix-bundler way instead of bundix's way -- see
-          # examples/bundler-audit/README.md for the full comparison
-          # against nixpkgs' actual checked-in Gemfile.lock/gemset.nix.
+          # pkgs/tools/security/bundler-audit, built the packnix-bundler
+          # way -- see examples/bundler-audit/README.md for the
+          # comparison against nixpkgs' committed Gemfile.lock/gemset.nix.
           bundler-audit = buildBundlerApp {
             inherit pkgs;
             pname = "bundler-audit";
@@ -58,28 +47,19 @@
           };
 
           # A git-sourced gem (anystyle, pinned to a real commit) -- no
-          # gitHashes needed. builtins.fetchGit { url; rev; } with a full
-          # commit SHA is itself content-addressed and evaluates purely
-          # (confirmed: no --impure anywhere in this build), so
-          # mkGemset pre-fetches it directly and hands the result to
-          # buildRubyGem as `src`, bypassing only the fetch step of
-          # nixpkgs' usual fetchgit-based path.
+          # gitHashes needed, since fetchGit with a full commit SHA is
+          # itself content-addressed and evaluates purely.
           git-source = buildBundlerApp {
             inherit pkgs;
             pname = "anystyle";
             gemdir = ./examples/git-source;
           };
 
-          # A big, real nixpkgs package: Chef development kit
-          # (pkgs/development/tools/chefdk), 289 gems, native extensions
-          # (ffi-yajl etc.) -- the scale test. Its lockfile regenerated
-          # via `bundle lock --add-checksums` resolves a few gems
-          # differently than the ~2020-era one committed to nixpkgs
-          # (rubygems.org's index has moved on since); notably it pulls
-          # in BOTH `fauxhai-ng` and `fauxhai-chef`, which both ship a
-          # `bin/fauxhai` binstub -- a real upstream collision, not a
-          # packnix-bundler bug, worked around the same way any
-          # `bundlerEnv` package would (`ignoreCollisions`).
+          # Chef development kit (pkgs/development/tools/chefdk), 289
+          # gems, native extensions -- the scale test. Re-locked lockfile
+          # pulls in both fauxhai-ng and fauxhai-chef, which both ship a
+          # bin/fauxhai binstub (a real upstream collision, worked around
+          # with ignoreCollisions like any bundlerEnv package would).
           chefdk = buildBundlerApp {
             inherit pkgs;
             name = "chefdk-example";
@@ -91,34 +71,19 @@
             ignoreCollisions = true;
           };
 
-          # fastlane (pkgs/tools/admin/fastlane) -- a real, widely-used
-          # nixpkgs package (mobile CI/CD tooling). Its Gemfile pins no
-          # fastlane version (`gem 'fastlane'`), so re-locking pulls the
-          # current release -- a deliberately different vintage than
-          # chefdk/bundler-audit above: those two exercise mkGemset
-          # against OLD, previously-committed nixpkgs lockfiles (useful
-          # for the bug comparisons in the README), whereas this one
-          # shows a FRESH real-world lockfile building cleanly with no
-          # native-toolchain overrides needed at all.
+          # pkgs/tools/admin/fastlane. Its Gemfile pins no version, so
+          # re-locking pulls the current release -- a fresh, real
+          # lockfile that builds cleanly with no native-toolchain
+          # overrides, unlike chefdk/bundler-audit's older ones.
           fastlane = buildBundlerApp {
             inherit pkgs;
             pname = "fastlane";
             gemdir = ./examples/fastlane;
           };
 
-          # anystyle-cli's real, CURRENT Gemfile (github:inukshuk/anystyle
-          # v1.5.0) -- a `PATH` source (`gemspec` in the Gemfile resolves
-          # to the project's own root gem), a real `GIT`-free dependency
-          # graph, and 5 real `group` blocks all in one project. Building
-          # this surfaced a real bug: `mkGemset` stored a PATH source's
-          # `remote:` (e.g. "." from the lockfile) as a bare string,
-          # which `pathDerivation`'s `outPath = "${path}"` then took
-          # completely literally -- the gem silently failed to install
-          # at all, no error, just missing from the built environment.
-          # `mkGemset` now resolves it against the lockfile's own
-          # directory (mirroring a real `bundix`-generated `gemset.nix`'s
-          # `path = ./.;`), confirmed by checking the built environment
-          # actually contains anystyle's real `lib/anystyle.rb`.
+          # The real, current anystyle project (github:inukshuk/anystyle
+          # v1.5.0): its Gemfile does `gemspec`, making its own root gem
+          # a PATH source, alongside 5 real `group` blocks.
           path-source = buildBundlerApp {
             inherit pkgs;
             pname = "anystyle";

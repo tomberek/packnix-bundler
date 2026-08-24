@@ -1,20 +1,9 @@
 # Unit test: mkGemset against a small, real Bundler-generated
-# Gemfile.lock (example/Gemfile.lock, produced by an actual `bundle lock
-# --add-checksums` run, not hand-written) must produce exactly the
-# attrset shape nixpkgs' `bundled-common`/`buildRubyGem` expects.
-#
-# The sha256 is independently verified in this repo's README/commit
-# history: `builtins.fetchurl` with this exact hash actually succeeded
-# against the real https://rubygems.org/gems/json-2.21.2.gem, proving
-# the CHECKSUMS-hex-to-nix32 conversion is correct, not just internally
-# self-consistent. `remotes` has no trailing slash (unlike a
-# Gemfile.lock's own `remote:` line, which always has one) -- verified
-# directly that the double-slash URL a trailing-slash remote would
-# produce genuinely 404s against rubygems.org's real server, only
-# masked in small examples by builds substituting from a binary cache
-# instead of hitting the URL directly (see lib/mk-gemset.nix's
-# `stripTrailingSlash` for the fix, surfaced by a much larger example
-# with many not-already-cached gems).
+# Gemfile.lock (example/Gemfile.lock) must produce exactly the attrset
+# shape nixpkgs' bundled-common/buildRubyGem expects. The sha256 is
+# independently verified in this repo's README: builtins.fetchurl with
+# this exact hash actually succeeded against the real
+# rubygems.org/gems/json-2.21.2.gem.
 {
   pkgs,
   mkGemset,
@@ -39,16 +28,11 @@ let
 
   passed = gemset == expected;
 
-  # Groups regression test: fixtures/groups/{Gemfile,Gemfile.lock} has
-  # `json` (no group -> "default") and `rspec` inside `group :test do`.
-  # Verifies BOTH that mkGemset resolves the right `groups` per gem (not
-  # just that it parses without erroring) AND that this actually changes
-  # what `pkgs.bundlerEnv` installs -- narrowing `groups` to exclude
-  # "test" must genuinely leave `rspec` itself out of the built env
-  # (transitive deps like rspec-core stay, since they're not directly
-  # named in the Gemfile and so default to "default" -- expected
-  # `bundlerEnv` behavior, not a bug: see `groupMatches`/`filterGemset`
-  # in nixpkgs' bundled-common/functions.nix).
+  # Groups regression: fixtures/groups has `json` (no group -> default)
+  # and `rspec` inside `group :test do`. Checks both that mkGemset
+  # resolves the right groups AND that narrowing `groups` actually
+  # excludes rspec from a real build (transitive deps like rspec-core
+  # stay, since they're not directly named in the Gemfile).
   groupsGemset = mkGemset {
     lockFile = ./fixtures/groups/Gemfile.lock;
     gemfile = ./fixtures/groups/Gemfile;
@@ -88,18 +72,11 @@ let
 
   groupsFilteringWorks = groupsGemsetExpected.groups && defaultExcludesRspec && withTestIncludesRspec;
 
-  # PATH-source regression test: fixtures/path-source/{Gemfile,
-  # Gemfile.lock,mygem/} declares `gem 'mygem', path: 'mygem'`. Before
-  # the fix, mkGemset stored a PATH source's `remote:` (here "mygem")
-  # verbatim as a bare string, which nixpkgs' `pathDerivation` (`outPath
-  # = "${path}"`) took completely literally -- meaningless outside the
-  # original checkout, so the gem silently failed to install with no
-  # error at all (confirmed directly against examples/anystyle/, a real,
-  # much bigger PATH-sourced project). Verifies BOTH that `mkGemset`
-  # resolves the path relative to the lockfile's own directory (matching
-  # a real `bundix`-generated gemset.nix's `path = ./.;` idiom) AND that
-  # the built environment actually contains the gem's real file, not
-  # just that the gemset attrset's `source.path` looks plausible.
+  # PATH-source regression: fixtures/path-source declares `gem 'mygem',
+  # path: 'mygem'`. Checks both that mkGemset resolves the path relative
+  # to the lockfile's own directory (matching a real bundix-generated
+  # gemset.nix's `path = ./.;`) and that the built environment actually
+  # contains the gem's real file.
   pathSourceGemset = mkGemset { lockFile = ./fixtures/path-source/Gemfile.lock; };
   pathSourceExpected = {
     resolvesToRealDirectory = builtins.pathExists (
