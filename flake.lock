@@ -18,11 +18,11 @@
     },
     "packnix": {
       "locked": {
-        "lastModified": 1787548324,
-        "narHash": "sha256-yk1EN5lnBlxlBlj2Wq7lvq4MYCcZXJDsinBAqHF4ChA=",
+        "lastModified": 1787552822,
+        "narHash": "sha256-cswOUNK5oiLY2KiIx5erFZpyvxhjA0RnufFyBG49xMA=",
         "owner": "tomberek",
         "repo": "packnix",
-        "rev": "2d546241a47fa091e0d6f90e0db8098d8aeb92ce",
+        "rev": "6232174b58abf3d6b144c44e6e59a121fa4411c7",
         "type": "github"
       },
       "original": {
